@@ -33,8 +33,25 @@ function createTextElement(text) {
   };
 }
 
+function render(element, container) {
+  var dom = element.type === "TEXT_ELEMENT" ? document.createTextNode("") : document.createElement(element.type);
+
+  var isProperty = function isProperty(key) {
+    return key !== "children";
+  };
+
+  Object.keys(element.props).filter(isProperty).forEach(function (name) {
+    dom[name] = element.props[name];
+  });
+  element.props.children.forEach(function (child) {
+    return render(child, dom);
+  });
+  container.appendChild(dom);
+}
+
 var Didact = {
-  createElement: createElement
+  createElement: createElement,
+  render: render
 };
 /** @jsx Didact.createElement */
 
@@ -42,9 +59,4 @@ var element = Didact.createElement("h1", {
   title: "foo"
 }, "Hello");
 var container = document.querySelector("#root");
-var node = document.createElement(element.type);
-node["title"] = element.props.title;
-var text = document.createTextNode("");
-text["nodeValue"] = element.props.children[0].props.nodeValue;
-node.appendChild(text);
-container.appendChild(node);
+Didact.render(element, container);
