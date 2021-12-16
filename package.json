@@ -1,0 +1,11 @@
+{
+  "name": "didact",
+  "version": "1.0.0",
+  "description": "My own react. Alternatively put, building react from scratch.",
+  "main": "app.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "author": "Vijay Kumar",
+  "license": "ISC"
+}
