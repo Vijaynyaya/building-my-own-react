@@ -4,8 +4,14 @@
   "description": "My own react. Alternatively put, building react from scratch.",
   "main": "app.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "build": "babel didact.js -o @didact.js"
   },
   "author": "Vijay Kumar",
-  "license": "ISC"
+  "license": "ISC",
+  "devDependencies": {
+    "@babel/cli": "^7.16.0",
+    "@babel/core": "^7.16.5",
+    "@babel/preset-env": "^7.16.5",
+    "@babel/preset-react": "^7.16.5"
+  }
 }
