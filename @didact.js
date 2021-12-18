@@ -33,20 +33,130 @@ function createTextElement(text) {
   };
 }
 
+var Helpers = {
+  isEvent: function isEvent(key) {
+    return key.startsWith("on");
+  },
+  isProperty: function isProperty(key) {
+    return key !== "children" && !Helpers.isEvent(key);
+  }
+};
+
+function createDOMElement(fiber) {
+  // create element
+  var dom = fiber.type === "TEXT_ELEMENT" ? document.createTextNode("") : document.createElement(fiber.type); // add properties
+
+  Object.keys(fiber.props).filter(Helpers.isProperty).forEach(function (name) {
+    dom[name] = fiber.props[name];
+  }); // add event listeners
+
+  Object.keys(fiber.props).filter(Helpers.isEvent).forEach(function (name) {
+    var eventType = name.toLowerCase().substring(2);
+    dom.addEventListener(eventType, fiber.props[name]);
+  });
+  return dom;
+}
+
+function commitFiberTree() {
+  commitFiberTreeToDOM(fiberTreeRoot.child);
+  fiberTreeRoot = null;
+}
+
+function commitFiberTreeToDOM(fiber) {
+  if (!fiber) {
+    return;
+  }
+
+  var domParent = fiber.parent.dom;
+
+  if (fiber.dom != null) {
+    domParent.appendChild(fiber.dom);
+  }
+
+  commitFiberTreeToDOM(fiber.child);
+  commitFiberTreeToDOM(fiber.sibling);
+}
+
 function render(element, container) {
-  var dom = element.type === "TEXT_ELEMENT" ? document.createTextNode("") : document.createElement(element.type);
-
-  var isProperty = function isProperty(key) {
-    return key !== "children";
+  fiberTreeRoot = {
+    dom: container,
+    props: {
+      children: [element]
+    }
   };
+  currentFiber = fiberTreeRoot;
+}
 
-  Object.keys(element.props).filter(isProperty).forEach(function (name) {
-    dom[name] = element.props[name];
-  });
-  element.props.children.forEach(function (child) {
-    return render(child, dom);
-  });
-  container.appendChild(dom);
+var currentFiber = null;
+var fiberTreeRoot = null;
+
+function constructFiberTree(deadline) {
+  var shouldYield = false; // construct Fiber Tree fiber by fiber in the browser's idle time
+
+  while (currentFiber && !shouldYield) {
+    currentFiber = constructFiber(currentFiber);
+    shouldYield = deadline.timeRemaining() < 1;
+  }
+
+  if (!currentFiber && fiberTreeRoot) {
+    // when the complete fiber tree has been generated
+    commitFiberTree();
+  }
+
+  requestIdleCallback(constructFiberTree);
+}
+
+requestIdleCallback(constructFiberTree);
+
+function constructFiber(fiber) {
+  // add dom node 📦, in other words set fiber node
+  if (!fiber.dom) {
+    fiber.dom = createDOMElement(fiber);
+  } // create child fibers
+
+
+  var children = fiber.props.children;
+  reconcileChildren(fiber, children); // return next fiber: update currentFiber.
+
+  if (fiber.child) {
+    return fiber.child;
+  } // otherwise, start moving towards the fiber root i.e. towards the 'parent'
+
+
+  var nextFiber = fiber;
+
+  while (nextFiber) {
+    if (nextFiber.sibling) {
+      return nextFiber.sibling;
+    }
+
+    nextFiber = nextFiber.parent;
+  }
+}
+
+function reconcileChildren(wipFiber, children) {
+  var index = 0;
+  var prevSibling = null;
+
+  while (index < children.length) {
+    var child = children[index];
+    var newFiber = {
+      type: child.type,
+      props: child.props,
+      dom: null,
+      parent: wipFiber
+    };
+
+    if (index === 0) {
+      wipFiber.child = newFiber;
+    } else if (child) {
+      prevSibling.sibling = newFiber;
+    } // note: prevSibling acts as a pointer. 
+
+
+    prevSibling = newFiber;
+    index++;
+  }
 }
 
 var Didact = {
@@ -55,8 +165,19 @@ var Didact = {
 };
 /** @jsx Didact.createElement */
 
-var element = Didact.createElement("h1", {
-  title: "foo"
-}, "Hello");
+var element = Didact.createElement("div", {
+  id: "child"
+}, Didact.createElement("h1", {
+  id: "grandChild"
+}, Didact.createElement("pre", {
+  id: "greatGrandChild"
+}, "pre \u21C6 h1 \u21C6 div \u21C6 #root"), Didact.createElement("pre", {
+  id: "greatGrandChild's Sibling",
+  onClick: function onClick() {
+    alert('Click event was received by the anchor tag');
+  }
+}, "pre \u21C6 h1 \u21C6 div \u21C6 #root", Didact.createElement("br", null), "\u2193   \u2197", Didact.createElement("br", null), "pre", Didact.createElement("br", null))), Didact.createElement("pre", {
+  id: "grandChild's Sibling"
+}, "h1 \u21C6 div \u21C6 #root", Didact.createElement("br", null), "\u2193   \u2197", Didact.createElement("br", null), "pre ", Didact.createElement("br", null), "grandChild's Sibling has no children"));
 var container = document.querySelector("#root");
 Didact.render(element, container);
