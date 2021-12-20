@@ -22,42 +22,78 @@ function createTextElement(text) {
   }
 }
 
-const Helpers = {
-  isEvent: key => key.startsWith("on"),
-  isProperty: key => 
-    key !== "children" && !Helpers.isEvent(key)
-}
-
 function createDOMElement(fiber) {
   // create element
   const dom = 
-    fiber.type === "TEXT_ELEMENT"
-      ? document.createTextNode("")
-      : document.createElement(fiber.type)
-  // add properties
-  Object.keys(fiber.props)
-    .filter(Helpers.isProperty)
-    .forEach(name => {
-      dom[name] = fiber.props[name]
-    })
-  // add event listeners
-  Object.keys(fiber.props)
-    .filter(Helpers.isEvent)
-    .forEach(name => {
-      const eventType = name
-        .toLowerCase()
-        .substring(2)
-      dom.addEventListener(
-        eventType,
-        fiber.props[name]
-      )
-    })  
+  fiber.type === "TEXT_ELEMENT"
+  ? document.createTextNode("")
+  : document.createElement(fiber.type)
+  // assign properties(including event listeners)
+  updateFiberDOM(dom, {}, fiber.props)
   
   return dom
 }
 
+const Helpers = {
+  isEvent: key => key.startsWith("on"),
+  isProperty: key => 
+    key !== "children" && !Helpers.isEvent(key),
+  isNew: (prev, next) => key =>
+    prev[key] !== next[key],
+  wasRemoved: (prev, next) => key => !(key in next)
+}
+
+function updateFiberDOM(dom, prevProps, nextProps) {
+  Object.keys(prevProps)
+    .forEach( name => {
+      if (Helpers.isProperty(name)) {
+        // remove old property if its not on the new fiber
+        if(Helpers.wasRemoved(prevProps, nextProps)(name)) {
+          dom[name] = ""
+        }
+      } else if (Helpers.isEvent(name)) {
+        // remove old event listener if its not on the new fiber
+        if (!(name in nextProps)) {
+          if (Helpers.isNew(prevProps, nextProps)(name)) {
+            const eventType = name
+              .toLowerCase()
+              .substring(2)
+            dom.removeEventListener(
+              eventType,
+              prevProps[name]
+            )
+          }
+        }
+      }
+    })
+  
+  Object.keys(nextProps)
+    .forEach(name => {
+      // add  new property
+      if (Helpers.isProperty(name)) {
+        if (Helpers.isNew(prevProps, nextProps)(name)) {
+          dom[name] = nextProps[name]
+        }
+      } else if (Helpers.isEvent(name)) {
+        // add new event listener
+        if (Helpers.isNew(prevProps, nextProps)(name)) {
+          const eventType = name
+            .toLowerCase()
+            .substring(2)
+          dom.addEventListener(
+            eventType,
+            nextProps[name]
+          )
+        }
+      }
+    })
+}
+
 function commitFiberTree() {
+  deletions.forEach(commitFiberTreeToDOM)
   commitFiberTreeToDOM(fiberTreeRoot.child)
+  // prepare for next render
+  previousFiberTree = fiberTreeRoot
   fiberTreeRoot = null
 }
 
@@ -68,7 +104,21 @@ function commitFiberTreeToDOM(fiber) {
 
   const domParent = fiber.parent.dom
   if (fiber.dom != null) {
-    domParent.appendChild(fiber.dom)
+    if (fiber.effectTag === "PLACEMENT") {
+      // for a fiber that's completely new
+      domParent.appendChild(fiber.dom)
+    } else if (fiber.effectTag === "UPDATE") {
+      // for a fiber that has a previous version
+      updateFiberDOM(
+        fiber.dom,
+        fiber.previous.props,
+        fiber.props
+      )
+    }
+  }
+  // for a fiber that's no longer needed
+  if (fiber.effectTag === "DELETION") {
+    domParent.removeChild(fiber.dom)
   }
 
   commitFiberTreeToDOM(fiber.child)
@@ -76,22 +126,26 @@ function commitFiberTreeToDOM(fiber) {
 }
 
 function render(element, container) {
-fiberTreeRoot = {
-  dom: container,
-  props: {
-    children: [element]
+  // set fiber tree's root
+  fiberTreeRoot = {
+    dom: container,
+    props: {
+      children: [element]
+    },
+    previous: previousFiberTree
   }
+  deletions = []
+  currentFiber = fiberTreeRoot
 }
 
-currentFiber = fiberTreeRoot
-}
-
-let currentFiber = null
 let fiberTreeRoot = null
+let currentFiber = null
+let deletions = null
+let previousFiberTree = null
 
 function constructFiberTree(deadline) {
   let shouldYield = false
-  // construct Fiber Tree fiber by fiber in the browser's idle time
+  // if fiber tree's root is set, construct Fiber Tree fiber by fiber in the browser's idle time
   while (currentFiber && !shouldYield) {
     currentFiber = constructFiber(
       currentFiber
@@ -100,7 +154,7 @@ function constructFiberTree(deadline) {
     shouldYield = deadline.timeRemaining() < 1
   }
   if (!currentFiber && fiberTreeRoot) {
-    // when the complete fiber tree has been generated
+    // when there are no more fiber's to be constructed
     commitFiberTree()
   }
 
@@ -110,7 +164,7 @@ function constructFiberTree(deadline) {
 requestIdleCallback(constructFiberTree)
 
 function constructFiber(fiber) {
-  // add dom node 📦, in other words set fiber node
+  // add dom node 📦, in other words set fiber's dom element
   if (!fiber.dom) {
     fiber.dom = createDOMElement(fiber)
   }
@@ -136,23 +190,66 @@ function constructFiber(fiber) {
 
 function reconcileChildren(wipFiber, children) {
   let index = 0
+  // if the fiber had a previous version, then get its previous version's child
+  let oldFiber = 
+    wipFiber.previous && wipFiber.previous.child
   let prevSibling = null
-  while (index < children.length) {
+
+  while (
+    index < children.length ||
+    oldFiber != null
+    ) {
     const child = children[index]
 
-    let newFiber = {
-      type: child.type,
-      props: child.props,
-      dom: null,
-      parent: wipFiber
+    let newFiber = null
+    
+    const isOfSameType = 
+      oldFiber &&
+      child &&
+      child.type === oldFiber.type
+
+    if (isOfSameType) {
+      // create new fiber which points to its previous version
+      newFiber = {
+        type: oldFiber.type,
+        props: child.props,
+        dom: oldFiber.dom,
+        parent: wipFiber,
+        previous: oldFiber,
+        effectTag: "UPDATE", 
+      }
+    }
+    if (child && !isOfSameType) {
+      // create a completely new fiber
+      newFiber = {
+        type: child.type,
+        props: child.props,
+        dom: null,
+        parent: wipFiber,
+        previous: null,
+        effectTag: "PLACEMENT"
+      }
+    }
+    if (oldFiber && !isOfSameType) {
+      // if the pevious version is no longer needed align it for deletion
+      oldFiber.effectTag = "DELETION"
+      deletions.push(oldFiber)
+      // as its only comparing the type of fibers, it may leave out some oldfibers which need deletion
     }
 
+    if (oldFiber) {
+      // remember: fibers on the stem point to their immediate sibling
+      // so the previous version of the next child is to going to be current child's previous version's sibling
+      oldFiber = oldFiber.sibling
+    }
+    
     if (index === 0) {
       wipFiber.child = newFiber
     } else if (child) {
+      // if this is not the first child, then the preceding child's fiber should point to the current child's fiber
       prevSibling.sibling = newFiber
     }
-    // note: prevSibling acts as a pointer. 
+    // note: prevSibling acts as a pointer(reference). 
     prevSibling = newFiber
     index++
   }
@@ -164,27 +261,20 @@ const Didact = {
 }
 
 /** @jsx Didact.createElement */
-const element = (
-  <div id="child">
-    <h1 id="grandChild">
-      <pre id="greatGrandChild">
-        pre ⇆ h1 ⇆ div ⇆ #root
-      </pre>
-      <pre id="greatGrandChild's Sibling" onClick={() => {alert('Click event was received by the anchor tag')}}>
-        pre ⇆ h1 ⇆ div ⇆ #root<br/>
-        ↓   ↗<br/>
-        pre<br/>
-      </pre>
-    </h1>
-    <pre id="grandChild's Sibling">
-      h1 ⇆ div ⇆ #root<br/>
-      ↓   ↗<br/>
-      pre <br/>
-      grandChild's Sibling has no children
-    </pre>
-  </div>
-)
+const container = document.querySelector('#root');
 
-const container = document.querySelector("#root")
+const updateValue = event => {
+  rerender(event.target.value);
+};
+const rerender = value => {
+  // rerender on each update in value
+  const element = (
+    <div>
+      <input onInput={updateValue} value={value}/>
+      <h2>Hello {value}</h2>
+    </div>
+  )
+  Didact.render(element, container);
+};
 
-Didact.render(element, container)
+rerender("World!");

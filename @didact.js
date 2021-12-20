@@ -33,32 +33,71 @@ function createTextElement(text) {
   };
 }
 
+function createDOMElement(fiber) {
+  // create element
+  var dom = fiber.type === "TEXT_ELEMENT" ? document.createTextNode("") : document.createElement(fiber.type); // assign properties(including event listeners)
+
+  updateFiberDOM(dom, {}, fiber.props);
+  return dom;
+}
+
 var Helpers = {
   isEvent: function isEvent(key) {
     return key.startsWith("on");
   },
   isProperty: function isProperty(key) {
     return key !== "children" && !Helpers.isEvent(key);
+  },
+  isNew: function isNew(prev, next) {
+    return function (key) {
+      return prev[key] !== next[key];
+    };
+  },
+  wasRemoved: function wasRemoved(prev, next) {
+    return function (key) {
+      return !(key in next);
+    };
   }
 };
 
-function createDOMElement(fiber) {
-  // create element
-  var dom = fiber.type === "TEXT_ELEMENT" ? document.createTextNode("") : document.createElement(fiber.type); // add properties
-
-  Object.keys(fiber.props).filter(Helpers.isProperty).forEach(function (name) {
-    dom[name] = fiber.props[name];
-  }); // add event listeners
-
-  Object.keys(fiber.props).filter(Helpers.isEvent).forEach(function (name) {
-    var eventType = name.toLowerCase().substring(2);
-    dom.addEventListener(eventType, fiber.props[name]);
+function updateFiberDOM(dom, prevProps, nextProps) {
+  Object.keys(prevProps).forEach(function (name) {
+    if (Helpers.isProperty(name)) {
+      // remove old property if its not on the new fiber
+      if (Helpers.wasRemoved(prevProps, nextProps)(name)) {
+        dom[name] = "";
+      }
+    } else if (Helpers.isEvent(name)) {
+      // remove old event listener if its not on the new fiber
+      if (!(name in nextProps)) {
+        if (Helpers.isNew(prevProps, nextProps)(name)) {
+          var eventType = name.toLowerCase().substring(2);
+          dom.removeEventListener(eventType, prevProps[name]);
+        }
+      }
+    }
   });
-  return dom;
+  Object.keys(nextProps).forEach(function (name) {
+    // add  new property
+    if (Helpers.isProperty(name)) {
+      if (Helpers.isNew(prevProps, nextProps)(name)) {
+        dom[name] = nextProps[name];
+      }
+    } else if (Helpers.isEvent(name)) {
+      // add new event listener
+      if (Helpers.isNew(prevProps, nextProps)(name)) {
+        var eventType = name.toLowerCase().substring(2);
+        dom.addEventListener(eventType, nextProps[name]);
+      }
+    }
+  });
 }
 
 function commitFiberTree() {
-  commitFiberTreeToDOM(fiberTreeRoot.child);
+  deletions.forEach(commitFiberTreeToDOM);
+  commitFiberTreeToDOM(fiberTreeRoot.child); // prepare for next render
+
+  previousFiberTree = fiberTreeRoot;
   fiberTreeRoot = null;
 }
 
@@ -70,7 +109,18 @@ function commitFiberTreeToDOM(fiber) {
   var domParent = fiber.parent.dom;
 
   if (fiber.dom != null) {
-    domParent.appendChild(fiber.dom);
+    if (fiber.effectTag === "PLACEMENT") {
+      // for a fiber that's completely new
+      domParent.appendChild(fiber.dom);
+    } else if (fiber.effectTag === "UPDATE") {
+      // for a fiber that has a previous version
+      updateFiberDOM(fiber.dom, fiber.previous.props, fiber.props);
+    }
+  } // for a fiber that's no longer needed
+
+
+  if (fiber.effectTag === "DELETION") {
+    domParent.removeChild(fiber.dom);
   }
 
   commitFiberTreeToDOM(fiber.child);
@@ -78,20 +128,25 @@ function commitFiberTreeToDOM(fiber) {
 }
 
 function render(element, container) {
+  // set fiber tree's root
   fiberTreeRoot = {
     dom: container,
     props: {
       children: [element]
-    }
+    },
+    previous: previousFiberTree
   };
+  deletions = [];
   currentFiber = fiberTreeRoot;
 }
 
-var currentFiber = null;
 var fiberTreeRoot = null;
+var currentFiber = null;
+var deletions = null;
+var previousFiberTree = null;
 
 function constructFiberTree(deadline) {
-  var shouldYield = false; // construct Fiber Tree fiber by fiber in the browser's idle time
+  var shouldYield = false; // if fiber tree's root is set, construct Fiber Tree fiber by fiber in the browser's idle time
 
   while (currentFiber && !shouldYield) {
     currentFiber = constructFiber(currentFiber);
@@ -99,7 +154,7 @@ function constructFiberTree(deadline) {
   }
 
   if (!currentFiber && fiberTreeRoot) {
-    // when the complete fiber tree has been generated
+    // when there are no more fiber's to be constructed
     commitFiberTree();
   }
 
@@ -109,7 +164,7 @@ function constructFiberTree(deadline) {
 requestIdleCallback(constructFiberTree);
 
 function constructFiber(fiber) {
-  // add dom node 📦, in other words set fiber node
+  // add dom node 📦, in other words set fiber's dom element
   if (!fiber.dom) {
     fiber.dom = createDOMElement(fiber);
   } // create child fibers
@@ -135,23 +190,58 @@ function constructFiber(fiber) {
 }
 
 function reconcileChildren(wipFiber, children) {
-  var index = 0;
+  var index = 0; // if the fiber had a previous version, then get its previous version's child
+
+  var oldFiber = wipFiber.previous && wipFiber.previous.child;
   var prevSibling = null;
 
-  while (index < children.length) {
+  while (index < children.length || oldFiber != null) {
     var child = children[index];
-    var newFiber = {
-      type: child.type,
-      props: child.props,
-      dom: null,
-      parent: wipFiber
-    };
+    var newFiber = null;
+    var isOfSameType = oldFiber && child && child.type === oldFiber.type;
+
+    if (isOfSameType) {
+      // create new fiber which points to its previous version
+      newFiber = {
+        type: oldFiber.type,
+        props: child.props,
+        dom: oldFiber.dom,
+        parent: wipFiber,
+        previous: oldFiber,
+        effectTag: "UPDATE"
+      };
+    }
+
+    if (child && !isOfSameType) {
+      // create a completely new fiber
+      newFiber = {
+        type: child.type,
+        props: child.props,
+        dom: null,
+        parent: wipFiber,
+        previous: null,
+        effectTag: "PLACEMENT"
+      };
+    }
+
+    if (oldFiber && !isOfSameType) {
+      // if the pevious version is no longer needed align it for deletion
+      oldFiber.effectTag = "DELETION";
+      deletions.push(oldFiber); // as its only comparing the type of fibers, it may leave out some oldfibers which need deletion
+    }
+
+    if (oldFiber) {
+      // remember: fibers on the stem point to their immediate sibling
+      // so the previous version of the next child is to going to be current child's previous version's sibling
+      oldFiber = oldFiber.sibling;
+    }
 
     if (index === 0) {
       wipFiber.child = newFiber;
     } else if (child) {
+      // if this is not the first child, then the preceding child's fiber should point to the current child's fiber
       prevSibling.sibling = newFiber;
-    } // note: prevSibling acts as a pointer. 
+    } // note: prevSibling acts as a pointer(reference). 
 
 
     prevSibling = newFiber;
@@ -165,19 +255,18 @@ var Didact = {
 };
 /** @jsx Didact.createElement */
 
-var element = Didact.createElement("div", {
-  id: "child"
-}, Didact.createElement("h1", {
-  id: "grandChild"
-}, Didact.createElement("pre", {
-  id: "greatGrandChild"
-}, "pre \u21C6 h1 \u21C6 div \u21C6 #root"), Didact.createElement("pre", {
-  id: "greatGrandChild's Sibling",
-  onClick: function onClick() {
-    alert('Click event was received by the anchor tag');
-  }
-}, "pre \u21C6 h1 \u21C6 div \u21C6 #root", Didact.createElement("br", null), "\u2193   \u2197", Didact.createElement("br", null), "pre", Didact.createElement("br", null))), Didact.createElement("pre", {
-  id: "grandChild's Sibling"
-}, "h1 \u21C6 div \u21C6 #root", Didact.createElement("br", null), "\u2193   \u2197", Didact.createElement("br", null), "pre ", Didact.createElement("br", null), "grandChild's Sibling has no children"));
-var container = document.querySelector("#root");
-Didact.render(element, container);
+var container = document.querySelector('#root');
+
+var updateValue = function updateValue(event) {
+  rerender(event.target.value);
+};
+
+var rerender = function rerender(value) {
+  var element = Didact.createElement("div", null, Didact.createElement("input", {
+    onInput: updateValue,
+    value: value
+  }), Didact.createElement("h2", null, "Hello ", value));
+  Didact.render(element, container);
+};
+
+rerender("World!");
